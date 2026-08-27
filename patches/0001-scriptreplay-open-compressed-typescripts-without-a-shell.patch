@@ -1,0 +1,80 @@
+From dd2baf1d2968c8e936c8082ebe91fe3c20900c9d Mon Sep 17 00:00:00 2001
+From: snap-scriptreplay-ng packaging <patch@local>
+Date: Thu, 27 Aug 2026 10:04:17 +0700
+Subject: [PATCH] scriptreplay: open compressed typescripts without a shell
+
+open_expr() built two-argument open() expressions such as "zcat $file|",
+which Perl runs through /bin/sh.  A typescript whose *file name* contains
+shell metacharacters therefore executes as a command, e.g.
+
+    scriptreplay 'evil ;touch PWNED; x.gz'
+
+runs touch(1) before any replay happens.  Names like this are plausible for
+files that arrive from an archive, a shared upload directory or removable
+media, so opening one should never be able to run code.
+
+Return the mode and argument list separately and use the list form of
+open(), which passes the file name to the decompressor via exec() with no
+shell involved, and destructure at both call sites (a bare
+open(FH, open_expr($f)) is compiled as a two-argument open, so the list
+would collapse back to a scalar).
+
+As a side effect the failure mode for a missing decompressor is now an
+immediate error ('Can''t exec "bzcat"') rather than a shell error message
+followed by a confusing 'not a valid typescript' complaint.
+---
+ scriptreplay | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/scriptreplay b/scriptreplay
+index 0e9fdef..c87715f 100755
+--- a/scriptreplay
++++ b/scriptreplay
+@@ -49,7 +49,8 @@ sub main() {
+ 	die "Acceleration factor must be greater than 0\n" unless $accel > 0;
+ 
+ 	# open script_file
+-	open (SCRIPT, open_expr($script_file))
++	my ($script_mode, @script_args) = open_expr($script_file);
++	open (SCRIPT, $script_mode, @script_args)
+ 		or die "Cannot open typescript file $script_file: $!\n";
+ 	unless (<SCRIPT> =~ /^S.*:.*/i) {
+ 		die "$script_file is not a valid typescript from script(1)\n";
+@@ -68,7 +69,8 @@ sub main() {
+ 
+ 	# open time_file
+ 	if ($time_file) {
+-		open (TIMING, open_expr($time_file))
++		my ($time_mode, @time_args) = open_expr($time_file);
++		open (TIMING, $time_mode, @time_args)
+ 			or die "Cannot open timing data file $time_file: $!\n";
+ 	}
+ 
+@@ -193,13 +195,19 @@ sub __exit($;@) {
+ }
+ 
+ sub open_expr($) {
+-	$_ = shift();
++	my $file = shift();
+ 
+-	/\.bz2$/i and return "bzcat $_|";	# block-sorting file compressor
+-	/\.gz$/i  and return "zcat  $_|";	# Lempel-Ziv coding (LZ77)
+-	/\.lz(?:ma)?$/i and return "lzcat $_|";	# Lempel-Ziv-Markov chain
++	# Return open() arguments in list form so that the file name is passed to
++	# the decompressor via exec(), never through a shell: a two-argument
++	# "bzcat $file|" runs /bin/sh, so a file named e.g. "x;rm -rf ~;.gz"
++	# would execute its own name.
++	local $_ = $file;
+ 
+-	return "<$_";
++	/\.bz2$/i and return ("-|", "bzcat", $file);	# block-sorting file compressor
++	/\.gz$/i  and return ("-|", "zcat",  $file);	# Lempel-Ziv coding (LZ77)
++	/\.lz(?:ma)?$/i and return ("-|", "lzcat", $file);	# Lempel-Ziv-Markov chain
++
++	return ("<", $file);
+ }
+ 
+ # start script
+-- 
+2.53.0
+

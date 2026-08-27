@@ -1,0 +1,223 @@
+name: scriptreplay-ng
+title: scriptreplay_ng
+summary: replay and record terminal sessions captured with script(1)
+description: |
+  scriptreplay_ng replays a typescript of a terminal session recorded by the
+  script(1) tool, using the timing data to reproduce the original typing and
+  output delays. Compressed typescripts (.bz2, .gz, .lz, .lzma) are read
+  directly.
+
+  During playback: "-"/"d" slows down, "+"/"i" speeds up, "="/"n" resets to
+  normal speed, "s"/"p" pauses, "c" continues, "q"/"f" quits.
+
+  For convenient aliases:
+
+  sudo snap alias scriptreplay-ng.scriptreplay scriptreplay
+
+  sudo snap alias scriptreplay-ng.record-script-session record-script-session
+
+  Note that record-script-session records the session inside this snap's own
+  confined runtime, so the recorded shell only sees the snap's environment.
+  To audit a real shell, run script(1) on the host instead.
+
+contact:
+  - https://github.com/barryprice
+issues:
+  - https://github.com/barryprice/snap-scriptreplay-ng/issues
+source-code:
+  - https://github.com/scoopex/scriptreplay_ng
+website:
+  - https://github.com/scoopex/scriptreplay_ng
+
+adopt-info: scriptreplay-ng
+base: core26
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+  armhf:
+  ppc64el:
+  riscv64:
+  s390x:
+
+apps:
+  scriptreplay:
+    command: bin/scriptreplay
+    plugs: [home, removable-media]
+    environment:
+      LC_ALL: C.UTF-8
+      # perl-base holds the core modules the script uses (POSIX, IO::Select,
+      # Getopt::Long, File::Basename); perl5/5.40 is the vendor arch directory
+      # that carries Term::ReadKey and its ReadKey.so. The 5.40 series is
+      # asserted against the staged perl in override-prime, so an archive perl
+      # bump fails the build instead of shipping an unloadable module path.
+      PERL5LIB: "$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/perl-base:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/perl5/5.40:$SNAP/usr/share/perl5:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/perl/5.40:$SNAP/usr/share/perl/5.40"
+
+  record-script-session:
+    command: bin/record-script-session
+    plugs: [home]
+    environment:
+      LC_ALL: C.UTF-8
+
+parts:
+  scriptreplay-ng:
+    # nil rather than dump: upstream ships two ready-to-run scripts and no
+    # build system, so they are installed by hand into bin/ below. Nothing is
+    # compiled; everything else in the tree (README, example session) stays out
+    # of the snap.
+    plugin: nil
+    source: https://github.com/scoopex/scriptreplay_ng.git
+    source-type: git
+    build-packages:
+      - git
+    stage-packages:
+      # Not in core26: the base carries no perl at all, and no script(1).
+      # gzip/zcat/bzcat come from the base and are on the runtime PATH.
+      - perl
+      - libterm-readkey-perl # non-core module used for the playback key handling
+      - bsdutils # script(1), used by record-script-session
+      - xz-utils # lzcat target, for .lz/.lzma typescripts
+    prime:
+      # bsdutils carries util-linux's own scriptreplay/scriptlive; shipping a
+      # second, different "scriptreplay" inside this snap would only confuse.
+      - -usr/bin/scriptreplay
+      - -usr/bin/scriptlive
+    override-pull: |
+      craftctl default
+
+      # Pinned upstream commit. scoopex/scriptreplay_ng publishes no releases
+      # and no current tags, so the pin is a master commit; Renovate bumps this
+      # line when master moves (see renovate.json).
+      # renovate: datasource=git-refs depName=scoopex/scriptreplay_ng
+      scriptreplay_ng_commit="62737dc8113cd4119a0dc1167d416f5cdbec164d"
+
+      # craft-parts may hand us a shallow clone, which would not contain the
+      # pinned commit if master has moved on since.
+      git fetch --force --unshallow origin master 2>/dev/null ||
+          git fetch --force origin master
+      git checkout --detach "${scriptreplay_ng_commit}"
+
+      # Downstream security patch. Upstream opens compressed typescripts with
+      # a two-argument open() - "zcat <file>|" - which Perl runs through
+      # /bin/sh, so replaying a file whose *name* contains shell
+      # metacharacters executes it. The patch switches to the list form of
+      # open(), which passes the name to the decompressor via exec(). It is
+      # carried here until upstream takes it, and `git apply` fails the build
+      # if a Renovate pin bump lands somewhere it no longer applies rather
+      # than silently dropping the fix.
+      git apply "${CRAFT_PROJECT_DIR}/patches/0001-scriptreplay-open-compressed-typescripts-without-a-shell.patch"
+
+      # Upstream has no version string of its own, so build one from the pinned
+      # commit: <commit date>+<short sha>, e.g. 2022.06.08+62737dc.
+      craftctl set version="$(git show -s --date=format:%Y.%m.%d --format=%cd HEAD)+$(git rev-parse --short=7 HEAD)"
+    override-build: |
+      craftctl default
+
+      install -Dm755 scriptreplay "${CRAFT_PART_INSTALL}/bin/scriptreplay"
+      install -Dm755 record-script-session "${CRAFT_PART_INSTALL}/bin/record-script-session"
+
+      # xz-utils ships lzcat as an update-alternatives symlink, and stage
+      # packages are unpacked without running maintainer scripts, so recreate
+      # it here: scriptreplay pipes .lz/.lzma typescripts through lzcat.
+      ln -sf xz "${CRAFT_PART_INSTALL}/usr/bin/lzcat"
+    override-prime: |
+      craftctl default
+
+      # Everything below runs against ${CRAFT_PRIME}, i.e. the exact tree that
+      # gets packed, rather than against the build environment's own perl.
+      perl_bin="${CRAFT_PRIME}/usr/bin/perl"
+      perl_series="$("${perl_bin}" -MConfig -e 'print $Config{version}')"
+      perl_series="${perl_series%.*}"
+      perl_arch_dir="${CRAFT_PRIME}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}"
+
+      # The app environment has to name the perl series literally, so fail here
+      # if the archive moved on rather than shipping a snap whose PERL5LIB
+      # points at directories that no longer exist.
+      for required in \
+          "${perl_bin}" \
+          "${CRAFT_PRIME}/usr/bin/script" \
+          "${CRAFT_PRIME}/usr/bin/lzcat" \
+          "${perl_arch_dir}/perl5/${perl_series}/Term/ReadKey.pm" \
+          "${perl_arch_dir}/perl5/${perl_series}/auto/Term/ReadKey/ReadKey.so" \
+          "${perl_arch_dir}/perl/${perl_series}" \
+          "${CRAFT_PRIME}/usr/share/perl/${perl_series}"; do
+          if [ ! -e "${required}" ]; then
+              echo "missing from the primed tree: ${required}" >&2
+              exit 1
+          fi
+      done
+      if ! grep -q "perl5/${perl_series}:" "${CRAFT_PROJECT_DIR}/snap/snapcraft.yaml"; then
+          echo "staged perl is ${perl_series}; update PERL5LIB in apps.scriptreplay" >&2
+          exit 1
+      fi
+
+      export PERL5LIB="${perl_arch_dir}/perl-base:${perl_arch_dir}/perl5/${perl_series}:${CRAFT_PRIME}/usr/share/perl5:${perl_arch_dir}/perl/${perl_series}:${CRAFT_PRIME}/usr/share/perl/${perl_series}"
+
+      # Compile check: this also loads Term::ReadKey, which is the one module
+      # outside perl-base.
+      "${perl_bin}" -c "${CRAFT_PRIME}/bin/scriptreplay"
+      bash -n "${CRAFT_PRIME}/bin/record-script-session"
+
+      "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay" -h | grep -q '^Usage:'
+
+      # End-to-end: replay upstream's own example session. scriptreplay puts the
+      # terminal into cbreak mode, so it needs a pty - script(1) from the primed
+      # tree provides one, and -e makes it return the replay's exit status.
+      replay_log="$(mktemp)"
+      timeout 300 "${CRAFT_PRIME}/usr/bin/script" -qec \
+          "'${perl_bin}' '${CRAFT_PRIME}/bin/scriptreplay' -a 1000 \
+           -t '${CRAFT_PART_SRC}/example/testsession.timing' \
+           '${CRAFT_PART_SRC}/example/testsession.transcript'" \
+          /dev/null > "${replay_log}" 2>&1
+      if ! grep -q 'typescript time (normal)' "${replay_log}"; then
+          echo "example replay produced no timing summary:" >&2
+          cat "${replay_log}" >&2
+          exit 1
+      fi
+      replayed="$(wc -c < "${replay_log}")"
+      expected="$(wc -c < "${CRAFT_PART_SRC}/example/testsession.transcript")"
+      if [ "${replayed}" -lt "${expected}" ]; then
+          echo "example replay emitted ${replayed} bytes, expected at least ${expected}" >&2
+          exit 1
+      fi
+      rm -f "${replay_log}"
+
+      # Compressed typescripts, replayed under a file name made of shell
+      # metacharacters. This gates the downstream patch from override-pull:
+      # unpatched, "zcat <name>|" goes through /bin/sh and the name's own
+      # `touch PWNED` runs. Putting the primed usr/bin first on PATH also
+      # proves the hand-made lzcat symlink resolves, since neither the base
+      # nor the build environment provides one.
+      inj_dir="$(mktemp -d)"
+      inj_name='evil ;touch PWNED; session'
+      gzip -c "${CRAFT_PART_SRC}/example/testsession.transcript" > "${inj_dir}/${inj_name}.transcript.gz"
+      gzip -c "${CRAFT_PART_SRC}/example/testsession.timing" > "${inj_dir}/${inj_name}.timing.gz"
+      "${CRAFT_PRIME}/usr/bin/xz" --format=lzma -c "${CRAFT_PART_SRC}/example/testsession.transcript" > "${inj_dir}/${inj_name}.transcript.lzma"
+      "${CRAFT_PRIME}/usr/bin/xz" --format=lzma -c "${CRAFT_PART_SRC}/example/testsession.timing" > "${inj_dir}/${inj_name}.timing.lzma"
+      for ext in gz lzma; do
+          replay_log="$(mktemp)"
+          ( cd "${inj_dir}" &&
+            PATH="${CRAFT_PRIME}/usr/bin:${PATH}" timeout 300 "${CRAFT_PRIME}/usr/bin/script" -qec \
+                "'${perl_bin}' '${CRAFT_PRIME}/bin/scriptreplay' -a 1000 \
+                 -t '${inj_name}.timing.${ext}' \
+                 '${inj_name}.transcript.${ext}'" \
+                /dev/null ) > "${replay_log}" 2>&1
+          if [ -e "${inj_dir}/PWNED" ]; then
+              echo "the typescript's file name was executed as a shell command" >&2
+              exit 1
+          fi
+          if ! grep -q 'typescript time (normal)' "${replay_log}"; then
+              echo ".${ext} replay produced no timing summary:" >&2
+              cat "${replay_log}" >&2
+              exit 1
+          fi
+          replayed="$(wc -c < "${replay_log}")"
+          if [ "${replayed}" -lt "${expected}" ]; then
+              echo ".${ext} replay emitted ${replayed} bytes, expected at least ${expected}" >&2
+              exit 1
+          fi
+          rm -f "${replay_log}"
+      done
+      rm -rf "${inj_dir}"
