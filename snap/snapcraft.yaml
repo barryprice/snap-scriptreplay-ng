@@ -162,34 +162,90 @@ parts:
 
       "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay" -h | grep -q '^Usage:'
 
-      # End-to-end: replay upstream's own example session. scriptreplay puts the
-      # terminal into cbreak mode, so it needs a pty - script(1) from the primed
-      # tree provides one, and -e makes it return the replay's exit status.
-      replay_log="$(mktemp)"
-      timeout 300 "${CRAFT_PRIME}/usr/bin/script" -qec \
-          "'${perl_bin}' '${CRAFT_PRIME}/bin/scriptreplay' -a 1000 \
-           -t '${CRAFT_PART_SRC}/example/testsession.timing' \
-           '${CRAFT_PART_SRC}/example/testsession.transcript'" \
-          /dev/null > "${replay_log}" 2>&1
-      if ! grep -q 'typescript time (normal)' "${replay_log}"; then
-          echo "example replay produced no timing summary:" >&2
-          cat "${replay_log}" >&2
-          exit 1
-      fi
-      replayed="$(wc -c < "${replay_log}")"
-      expected="$(wc -c < "${CRAFT_PART_SRC}/example/testsession.transcript")"
-      if [ "${replayed}" -lt "${expected}" ]; then
-          echo "example replay emitted ${replayed} bytes, expected at least ${expected}" >&2
-          exit 1
-      fi
-      rm -f "${replay_log}"
+      # Replay gates.
+      #
+      # These run the primed perl directly, with stdin on /dev/null and under
+      # `timeout --kill-after`, so a wedged replay is always killed.
+      #
+      # An earlier version wrapped each replay in script(1) for a pty. A
+      # managed (LXD) build stopped on that line and outlived its own
+      # `timeout 300` - craft-parts waited on the scriptlet's pipes until the
+      # build was interrupted. That was never reproduced outside LXD, so the
+      # wrapper is removed rather than diagnosed: it is the only piece of the
+      # gate that needs a pty, it is where the build stopped, and script(1)
+      # runs the replay in a session of its own (verifiable with `ps -o sess`),
+      # which puts it beyond the reach of a `timeout` signalling its own
+      # process group.
+      #
+      # Dropping it costs nothing: scriptreplay's cbreak setup is a no-op off
+      # a terminal, so the replay runs the same code either way.
+      # What a correct replay emits on stdout: the typescript body, byte for
+      # byte, followed by scriptreplay's own timing summary. script(1) wraps a
+      # typescript in a "Script started"/"Script done" pair - scriptreplay
+      # reads the first line to validate the file and never replays the last
+      # one - so the body is the transcript with those two lines removed.
+      # Comparing against it catches a replay that stops early or garbles its
+      # output; a byte count cannot, because the summary lines pad it.
+      payload="$(mktemp)"
+      sed '1d;$d' "${CRAFT_PART_SRC}/example/testsession.transcript" > "${payload}"
+      payload_bytes="$(wc -c < "${payload}")"
 
-      # Compressed typescripts, replayed under a file name made of shell
+      # replay_gate <label> <directory> <timing file> <typescript>
+      replay_gate() {
+          gate_label="$1"
+          gate_dir="$2"
+          gate_timing="$3"
+          gate_script="$4"
+          gate_out="$(mktemp)"
+          gate_err="$(mktemp)"
+          gate_rc=0
+
+          # The primed usr/bin leads PATH so the hand-made lzcat symlink is the
+          # one that has to resolve; neither the base nor the build
+          # environment provides an lzcat of its own. xtrace goes off around
+          # the run - it would otherwise land in ${gate_err}, which has to
+          # hold the replay's own diagnostics and nothing else.
+          set +x
+          ( cd "${gate_dir}"
+            PATH="${CRAFT_PRIME}/usr/bin:${PATH}"
+            exec timeout --kill-after=10s 120 \
+                "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay" \
+                -a 1000 -t "${gate_timing}" "${gate_script}" ) \
+              < /dev/null > "${gate_out}" 2> "${gate_err}" || gate_rc=$?
+          set -x
+
+          if [ "${gate_rc}" -ne 0 ]; then
+              echo "${gate_label}: scriptreplay exited ${gate_rc} (124: timed out)" >&2
+              cat "${gate_err}" "${gate_out}" >&2
+              exit 1
+          fi
+          # A clean replay says nothing on stderr; warnings there mean a read
+          # failure or a module loaded from somewhere unexpected.
+          if [ -s "${gate_err}" ]; then
+              echo "${gate_label}: replay wrote to stderr:" >&2
+              cat "${gate_err}" >&2
+              exit 1
+          fi
+          if ! cmp -s -n "${payload_bytes}" "${gate_out}" "${payload}"; then
+              echo "${gate_label}: replayed output does not match the typescript body" >&2
+              cmp -n "${payload_bytes}" "${gate_out}" "${payload}" >&2 || true
+              exit 1
+          fi
+          if ! grep -q 'typescript time (normal)' "${gate_out}"; then
+              echo "${gate_label}: replay produced no timing summary" >&2
+              exit 1
+          fi
+          rm -f "${gate_out}" "${gate_err}"
+      }
+
+      # End-to-end: replay upstream's own example session.
+      replay_gate "example session" "${CRAFT_PART_SRC}/example" \
+          testsession.timing testsession.transcript
+
+      # The same session, compressed, replayed under a file name made of shell
       # metacharacters. This gates the downstream patch from override-pull:
       # unpatched, "zcat <name>|" goes through /bin/sh and the name's own
-      # `touch PWNED` runs. Putting the primed usr/bin first on PATH also
-      # proves the hand-made lzcat symlink resolves, since neither the base
-      # nor the build environment provides one.
+      # `touch PWNED` runs.
       inj_dir="$(mktemp -d)"
       inj_name='evil ;touch PWNED; session'
       gzip -c "${CRAFT_PART_SRC}/example/testsession.transcript" > "${inj_dir}/${inj_name}.transcript.gz"
@@ -197,27 +253,11 @@ parts:
       "${CRAFT_PRIME}/usr/bin/xz" --format=lzma -c "${CRAFT_PART_SRC}/example/testsession.transcript" > "${inj_dir}/${inj_name}.transcript.lzma"
       "${CRAFT_PRIME}/usr/bin/xz" --format=lzma -c "${CRAFT_PART_SRC}/example/testsession.timing" > "${inj_dir}/${inj_name}.timing.lzma"
       for ext in gz lzma; do
-          replay_log="$(mktemp)"
-          ( cd "${inj_dir}" &&
-            PATH="${CRAFT_PRIME}/usr/bin:${PATH}" timeout 300 "${CRAFT_PRIME}/usr/bin/script" -qec \
-                "'${perl_bin}' '${CRAFT_PRIME}/bin/scriptreplay' -a 1000 \
-                 -t '${inj_name}.timing.${ext}' \
-                 '${inj_name}.transcript.${ext}'" \
-                /dev/null ) > "${replay_log}" 2>&1
+          replay_gate ".${ext} replay" "${inj_dir}" \
+              "${inj_name}.timing.${ext}" "${inj_name}.transcript.${ext}"
           if [ -e "${inj_dir}/PWNED" ]; then
               echo "the typescript's file name was executed as a shell command" >&2
               exit 1
           fi
-          if ! grep -q 'typescript time (normal)' "${replay_log}"; then
-              echo ".${ext} replay produced no timing summary:" >&2
-              cat "${replay_log}" >&2
-              exit 1
-          fi
-          replayed="$(wc -c < "${replay_log}")"
-          if [ "${replayed}" -lt "${expected}" ]; then
-              echo ".${ext} replay emitted ${replayed} bytes, expected at least ${expected}" >&2
-              exit 1
-          fi
-          rm -f "${replay_log}"
       done
-      rm -rf "${inj_dir}"
+      rm -rf "${inj_dir}" "${payload}"

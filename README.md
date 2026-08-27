@@ -87,12 +87,25 @@ The snap carries one patch, in [`patches/`](patches), applied during the pull st
 
 Every build gates on the packed tree, not the build environment: the staged perl must
 compile `scriptreplay` and load `Term::ReadKey`, `record-script-session` must parse, `-h`
-must print usage, and upstream's own example session is replayed end-to-end through a pty —
-its timing summary and full output length are both checked. The same session is then
-replayed from `.gz` and `.lzma` copies named `evil ;touch PWNED; session.*`, which both
-proves the patch above (no `PWNED` file may appear) and exercises the hand-made `lzcat`
-symlink. The perl series named in `PERL5LIB` is verified against the staged interpreter, so
-an archive perl bump fails the build instead of shipping broken module paths.
+must print usage, and upstream's own example session is replayed end-to-end. The replayed
+bytes are compared against the typescript body — the transcript with `script(1)`'s
+`Script started`/`Script done` lines removed — so a replay that stops early or garbles its
+output fails, which a byte count would miss because the timing summary pads it. Anything
+on stderr fails the gate too. The same session is then replayed from `.gz` and `.lzma`
+copies named `evil ;touch PWNED; session.*`, which proves the patch above (no `PWNED` file
+may appear), exercises the hand-made `lzcat` symlink, and shows each decompressor returns
+the identical body. The perl series named in `PERL5LIB` is verified against the staged
+interpreter, so an archive perl bump fails the build instead of shipping broken module
+paths.
+
+Each replay runs the primed `perl` directly, with `stdin` on `/dev/null` and under
+`timeout --kill-after`, so a wedged replay is always killed. An earlier version wrapped
+each replay in `script(1)` to give it a pty; a managed (LXD) build stopped on that line and
+outlived its own `timeout`, leaving craft-parts waiting on the scriptlet's pipes. That was
+never reproduced outside LXD, so the wrapper was removed rather than diagnosed — it is the
+only part of the gate that needed a pty, and `script(1)` runs its child in a separate
+session, out of reach of a `timeout` that signals its own process group. Nothing is lost:
+`scriptreplay`'s cbreak setup is a no-op off a terminal.
 
 A CI workflow builds and lints the snap on every push and pull request;
 [snapcraft.io](https://snapcraft.io) handles publishing to the Store on its own schedule.
