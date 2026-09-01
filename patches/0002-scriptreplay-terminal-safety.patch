@@ -1,0 +1,98 @@
+diff --git a/scriptreplay b/scriptreplay
+index c87715f..3aaaeca 100755
+--- a/scriptreplay
++++ b/scriptreplay
+@@ -90,6 +90,7 @@ sub main() {
+ 	my $accel_time  = 0;			# accelerated typescript
+ 	my ($block, $oldblock)  = ("", "");	# script block
+ 	my ($delay, $blocksize) = (.005, 1);	# timing parameter
++	my $term_tail = "";
+ 
+ 	# install signal handler to reset Term::ReadKey modes
+ 	my $sigaction = POSIX::SigAction->new(sub { __exit 0; },
+@@ -128,18 +129,39 @@ sub main() {
+ 		# cannot be accurately done, because the system calls in this
+ 		# loop will have more overhead. The 0.0001 is arbitrary, but
+ 		# works fairly well.
+-		my @fdset = $select->can_read($timeout) if $timeout > 0.0001;
+-
+-		# handle read terminal keys
++		my @fdset;
++		@fdset = $select->can_read($timeout) if $timeout > 0.0001;
++
++		# Handle playback-control keys pressed by the person watching.
++		#
++		# Applications inside the typescript (notably vim) query the
++		# terminal and enable reporting modes on startup, e.g. device
++		# attributes, XTGETTCAP (ESC P + q ...), cursor position, mouse
++		# tracking and focus reporting. During replay those bytes reach
++		# the real terminal, which answers on *our* STDIN with escape
++		# sequences. Matching them loosely against control keys made
++		# scriptreplay abort the moment vim opened, because an XTGETTCAP
++		# reply (hex encoded) or a device-attributes reply routinely
++		# contains an 'f'/'q' byte -- interpreted here as "quit".
++		#
++		# Fix: read a single key, but if it starts an escape sequence,
++		# drain and ignore the whole sequence, and match commands by
++		# exact character so reply payloads can never trigger a command.
+ 		if (@fdset) {
+ 			my $key = ReadKey(0);
+ 
+-			$accel += 0.1 if $key =~ /-|d/i;
+-			$accel -= 0.1 if $key =~ /\+|i/i && $accel > 0.11;
+-			$accel = 1 if $key =~ /=|n/i;
+-			last REPLAY   if $key =~ /q|f/i;
+-			if ($key =~ /s|p/i) {
+-				while (ReadKey(0) !~ /c/i) { next; }
++			if (defined($key) && $key eq "\e") {
++				# terminal reply / escape sequence: swallow it
++				1 while defined(ReadKey(-1));
++			} elsif (defined($key)) {
++				$accel += 0.1 if $key eq '-' || lc($key) eq 'd';
++				$accel -= 0.1 if ($key eq '+' || lc($key) eq 'i') && $accel > 0.11;
++				$accel = 1     if $key eq '=' || lc($key) eq 'n';
++				last REPLAY    if lc($key) eq 'q' || lc($key) eq 'f';
++				if (lc($key) eq 's' || lc($key) eq 'p') {
++					my $k;
++					do { $k = ReadKey(0); } until defined($k) && lc($k) eq 'c';
++				}
+ 			}
+ 		}
+ 
+@@ -152,6 +174,24 @@ sub main() {
+ 		last REPLAY unless $cnt;	# EoF
+ 
+ 		print $oldblock;		# write delayed block
++
++		# Detect when a full-screen application (e.g. vim) leaves the
++		# alternate screen (ESC[?1049l and friends). Such applications
++		# set a scroll region (DECSTBM, ESC[1;<rows>r) sized to the
++		# recording terminal and frequently do not reset it on exit, so
++		# on a differently sized replay terminal every following line is
++		# confined to that stale region and the output becomes garbled.
++		# Reset the scroll region once the alternate screen is left,
++		# saving/restoring the cursor so it does not jump to the home
++		# position that a bare DECSTBM reset would otherwise force.
++		$term_tail .= $oldblock;
++		if ($term_tail =~ /\e\[\?(?:1049|1047|47)l/) {
++			print "\e7\e[r\e8\e[?25h";
++			$term_tail = "";
++		} elsif (length($term_tail) > 8) {
++			$term_tail = substr($term_tail, -8);
++		}
++
+ 		$oldblock = $block;
+ 	}
+ 	print $oldblock;
+@@ -183,6 +223,11 @@ sub __exit($;@) {
+ 	my $exitcode = shift();
+ 	my @times    = @_;
+ 
++	# Restore a sane terminal display state so nothing set by a full-screen
++	# application in the typescript (scroll region, alternate screen, hidden
++	# cursor, charset, attributes) leaks into the user's shell.
++	print "\e[r\e[?1049l\e[?25h\e(B\e[0m";
++
+ 	ReadMode('normal');
+ 	if (@times) {
+ 		printf "\n$progname: %s %5.0f seconds (%2.0f minutes)\n",

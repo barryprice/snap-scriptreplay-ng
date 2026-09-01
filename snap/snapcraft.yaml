@@ -109,6 +109,19 @@ parts:
       # than silently dropping the fix.
       git apply "${CRAFT_PROJECT_DIR}/patches/0001-scriptreplay-open-compressed-typescripts-without-a-shell.patch"
 
+      # Downstream security patch to better handle playback-control keys
+      # pressed by the person watching.
+      # Applications inside the typescript (notably vim) query the
+      # terminal and enable reporting modes on startup, e.g. device
+      # attributes, XTGETTCAP (ESC P + q ...), cursor position, mouse
+      # tracking and focus reporting. During replay those bytes reach
+      # the real terminal, which answers on *our* STDIN with escape
+      # sequences. Matching them loosely against control keys made
+      # scriptreplay abort the moment vim opened, because an XTGETTCAP
+      # reply (hex encoded) or a device-attributes reply routinely
+      # contains an 'f'/'q' byte -- interpreted here as "quit".
+      git apply "${CRAFT_PROJECT_DIR}/patches/0002-scriptreplay-terminal-safety.patch"
+
       # Upstream has no version string of its own, so build one from the pinned
       # commit: <commit date>+<short sha>, e.g. 2022.06.08+62737dc.
       craftctl set version="$(git show -s --date=format:%Y.%m.%d --format=%cd HEAD)+$(git rev-parse --short=7 HEAD)"
