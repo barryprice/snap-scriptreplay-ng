@@ -10,9 +10,7 @@ description: |
   During playback: "-"/"d" slows down, "+"/"i" speeds up, "="/"n" resets to
   normal speed, "s"/"p" pauses, "c" continues, "q"/"f" quits.
 
-  For convenient aliases:
-
-  sudo snap alias scriptreplay-ng.scriptreplay scriptreplay
+  For a convenient alias for the record-script-session command:
 
   sudo snap alias scriptreplay-ng.record-script-session record-script-session
 
@@ -43,8 +41,8 @@ platforms:
   s390x:
 
 apps:
-  scriptreplay:
-    command: bin/scriptreplay
+  scriptreplay-ng:
+    command: bin/scriptreplay-ng
     plugs: [home, removable-media]
     environment:
       LC_ALL: C.UTF-8
@@ -115,7 +113,7 @@ parts:
     override-build: |
       craftctl default
 
-      install -Dm755 scriptreplay "${CRAFT_PART_INSTALL}/bin/scriptreplay"
+      install -Dm755 scriptreplay "${CRAFT_PART_INSTALL}/bin/scriptreplay-ng"
       install -Dm755 record-script-session "${CRAFT_PART_INSTALL}/bin/record-script-session"
 
       # xz-utils ships lzcat as an update-alternatives symlink, and stage
@@ -157,10 +155,10 @@ parts:
 
       # Compile check: this also loads Term::ReadKey, which is the one module
       # outside perl-base.
-      "${perl_bin}" -c "${CRAFT_PRIME}/bin/scriptreplay"
+      "${perl_bin}" -c "${CRAFT_PRIME}/bin/scriptreplay-ng"
       bash -n "${CRAFT_PRIME}/bin/record-script-session"
 
-      "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay" -h | grep -q '^Usage:'
+      "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay-ng" -h | grep -q '^Usage:'
 
       # Replay gates.
       #
@@ -209,13 +207,13 @@ parts:
           ( cd "${gate_dir}"
             PATH="${CRAFT_PRIME}/usr/bin:${PATH}"
             exec timeout --kill-after=10s 120 \
-                "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay" \
+                "${perl_bin}" "${CRAFT_PRIME}/bin/scriptreplay-ng" \
                 -a 1000 -t "${gate_timing}" "${gate_script}" ) \
               < /dev/null > "${gate_out}" 2> "${gate_err}" || gate_rc=$?
           set -x
 
           if [ "${gate_rc}" -ne 0 ]; then
-              echo "${gate_label}: scriptreplay exited ${gate_rc} (124: timed out)" >&2
+              echo "${gate_label}: scriptreplay-ng exited ${gate_rc} (124: timed out)" >&2
               cat "${gate_err}" "${gate_out}" >&2
               exit 1
           fi
