@@ -1,4 +1,4 @@
-name: scriptreplay-ng
+name: scriptreplay-ng-bp
 title: scriptreplay_ng
 summary: replay and record terminal sessions captured with script(1)
 description: |
@@ -10,9 +10,11 @@ description: |
   During playback: "-"/"d" slows down, "+"/"i" speeds up, "="/"n" resets to
   normal speed, "s"/"p" pauses, "c" continues, "q"/"f" quits.
 
-  For a convenient alias for the record-script-session command:
+  For convenient aliases:
 
-  sudo snap alias scriptreplay-ng.record-script-session record-script-session
+  sudo snap alias scriptreplay-ng-bp.scriptreplay-ng scriptreplay-ng
+
+  sudo snap alias scriptreplay-ng-bp.record-script-session record-script-session
 
   Note that record-script-session records the session inside this snap's own
   confined runtime, so the recorded shell only sees the snap's environment.
