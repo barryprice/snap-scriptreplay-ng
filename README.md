@@ -9,18 +9,18 @@ demos and shell audit trails. This repo packages it as a strictly-confined Snap.
 ## Install
 
 ```bash
-sudo snap install scriptreplay-ng
-sudo snap alias scriptreplay-ng.scriptreplay scriptreplay
-sudo snap alias scriptreplay-ng.record-script-session record-script-session
+sudo snap install scriptreplay-ng-bp
+sudo snap alias scriptreplay-ng-bp.scriptreplay-ng scriptreplay-ng
+sudo snap alias scriptreplay-ng-bp.record-script-session record-script-session
 ```
 
 ## Usage
 
-Replay a session:
+Replay a session (relies on the above aliases):
 
 ```bash
-scriptreplay-ng.scriptreplay -t timing typescript
-scriptreplay-ng.scriptreplay -a 2 -t ~/.script/2014-07-21/…/timing.gz ~/.script/…/typescript.gz
+scriptreplay-ng -t timing typescript
+scriptreplay-ng -a 2 -t ~/.script/2014-07-21/…/timing.gz ~/.script/…/typescript.gz
 ```
 
 Compressed typescripts (`.bz2`, `.gz`, `.lz`, `.lzma`) are read directly; if `-t` is
@@ -34,10 +34,10 @@ During playback: `-`/`d` slows down, `+`/`i` speeds up, `=`/`n` returns to norma
 `record-script-session` wraps `script -t`, writing a gzipped typescript and timing file
 under `$HOME/.script/<date>/<timestamp>-<name>/`. Inside a strict snap `$HOME` is the
 snap's own user data directory, so the recording actually lands in
-`~/snap/scriptreplay-ng/current/.script/…`; the path is printed when the session ends:
+`~/snap/scriptreplay-ng-bp/current/.script/…`; the path is printed when the session ends:
 
 ```bash
-scriptreplay-ng.record-script-session mysession
+record-script-session mysession
 ```
 
 It records with `script(1)`, which starts `$SHELL` — set `SHELL=/bin/bash` if your login
@@ -52,8 +52,8 @@ shell is not part of the snap's runtime.
 
 | Interface | App | Notes |
 | --------- | --- | ----- |
-| `home` | both | auto-connected; read typescripts from `$HOME` and write recordings under `~/snap/scriptreplay-ng/` |
-| `removable-media` | `scriptreplay` | **not** auto-connected — `sudo snap connect scriptreplay-ng:removable-media` to replay from `/media` or `/mnt` |
+| `home` | both | auto-connected; read typescripts from `$HOME` and write recordings under `~/snap/scriptreplay-ng-bp/` |
+| `removable-media` | `scriptreplay-ng` | **not** auto-connected — `sudo snap connect scriptreplay-ng-bp:removable-media` to replay from `/media` or `/mnt` |
 
 ## How it works
 
@@ -62,7 +62,7 @@ Upstream publishes no releases and no current tags, so the snap pins a specific 
 request when it moves, so updates are reviewed rather than picked up silently. The snap
 version is derived from the pinned commit as `<commit date>+<short sha>`.
 
-`scriptreplay` is a Perl script and core26 ships no perl at all, so the snap stages `perl`,
+`scriptreplay-ng` is a Perl script and core26 ships no perl at all, so the snap stages `perl`,
 `libterm-readkey-perl` (the one non-core module it uses), `bsdutils` (for `script(1)`) and
 `xz-utils` (whose `lzcat` is an update-alternatives symlink the build recreates by hand);
 `gzip`, `zcat` and `bzcat` come from the base. `PERL5LIB` is set per app so the staged
@@ -75,7 +75,7 @@ The snap carries one patch, in [`patches/`](patches), applied during the pull st
 - **`0001-scriptreplay-open-compressed-typescripts-without-a-shell.patch`** — upstream opens
   a compressed typescript with a two-argument `open(SCRIPT, "zcat $file|")`, which Perl runs
   through `/bin/sh`. Replaying a file whose *name* contains shell metacharacters therefore
-  executes it: `scriptreplay 'evil ;touch PWNED; x.gz'` runs `touch` before any replay
+  executes it: `scriptreplay-ng 'evil ;touch PWNED; x.gz'` runs `touch` before any replay
   happens — a realistic hazard for typescripts unpacked from an archive or read off
   removable media. The patch returns the mode and arguments separately and uses the list
   form of `open()`, so the file name reaches the decompressor through `exec()` with no shell
@@ -86,7 +86,7 @@ The snap carries one patch, in [`patches/`](patches), applied during the pull st
 ### Build gates
 
 Every build gates on the packed tree, not the build environment: the staged perl must
-compile `scriptreplay` and load `Term::ReadKey`, `record-script-session` must parse, `-h`
+compile `scriptreplay-ng` and load `Term::ReadKey`, `record-script-session` must parse, `-h`
 must print usage, and upstream's own example session is replayed end-to-end. The replayed
 bytes are compared against the typescript body — the transcript with `script(1)`'s
 `Script started`/`Script done` lines removed — so a replay that stops early or garbles its
@@ -105,7 +105,7 @@ outlived its own `timeout`, leaving craft-parts waiting on the scriptlet's pipes
 never reproduced outside LXD, so the wrapper was removed rather than diagnosed — it is the
 only part of the gate that needed a pty, and `script(1)` runs its child in a separate
 session, out of reach of a `timeout` that signals its own process group. Nothing is lost:
-`scriptreplay`'s cbreak setup is a no-op off a terminal.
+`scriptreplay-ng`'s cbreak setup is a no-op off a terminal.
 
 A CI workflow builds and lints the snap on every push and pull request;
 [snapcraft.io](https://snapcraft.io) handles publishing to the Store on its own schedule.
