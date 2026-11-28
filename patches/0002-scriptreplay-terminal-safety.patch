@@ -2,15 +2,7 @@ diff --git a/scriptreplay b/scriptreplay
 index c87715f..3aaaeca 100755
 --- a/scriptreplay
 +++ b/scriptreplay
-@@ -90,6 +90,7 @@ sub main() {
- 	my $accel_time  = 0;			# accelerated typescript
- 	my ($block, $oldblock)  = ("", "");	# script block
- 	my ($delay, $blocksize) = (.005, 1);	# timing parameter
-+	my $term_tail = "";
- 
- 	# install signal handler to reset Term::ReadKey modes
- 	my $sigaction = POSIX::SigAction->new(sub { __exit 0; },
-@@ -128,18 +129,39 @@ sub main() {
+@@ -128,18 +128,39 @@ sub main() {
  		# cannot be accurately done, because the system calls in this
  		# loop will have more overhead. The 0.0001 is arbitrary, but
  		# works fairly well.
@@ -59,40 +51,20 @@ index c87715f..3aaaeca 100755
  			}
  		}
  
-@@ -152,6 +174,24 @@ sub main() {
- 		last REPLAY unless $cnt;	# EoF
- 
- 		print $oldblock;		# write delayed block
-+
-+		# Detect when a full-screen application (e.g. vim) leaves the
-+		# alternate screen (ESC[?1049l and friends). Such applications
-+		# set a scroll region (DECSTBM, ESC[1;<rows>r) sized to the
-+		# recording terminal and frequently do not reset it on exit, so
-+		# on a differently sized replay terminal every following line is
-+		# confined to that stale region and the output becomes garbled.
-+		# Reset the scroll region once the alternate screen is left,
-+		# saving/restoring the cursor so it does not jump to the home
-+		# position that a bare DECSTBM reset would otherwise force.
-+		$term_tail .= $oldblock;
-+		if ($term_tail =~ /\e\[\?(?:1049|1047|47)l/) {
-+			print "\e7\e[r\e8\e[?25h";
-+			$term_tail = "";
-+		} elsif (length($term_tail) > 8) {
-+			$term_tail = substr($term_tail, -8);
-+		}
-+
- 		$oldblock = $block;
- 	}
- 	print $oldblock;
-@@ -183,6 +223,11 @@ sub __exit($;@) {
+@@ -183,9 +204,15 @@ sub __exit($;@) {
  	my $exitcode = shift();
  	my @times    = @_;
  
 +	# Restore a sane terminal display state so nothing set by a full-screen
 +	# application in the typescript (scroll region, alternate screen, hidden
-+	# cursor, charset, attributes) leaks into the user's shell.
-+	print "\e[r\e[?1049l\e[?25h\e(B\e[0m";
++	# cursor, charset, attributes) leaks into the user's shell. It carries
++	# the summary's leading newline, so the replayed body stays byte-exact.
++	print "\n\e[r\e[?1049l\e[?25h\e(B\e[0m";
 +
  	ReadMode('normal');
  	if (@times) {
- 		printf "\n$progname: %s %5.0f seconds (%2.0f minutes)\n",
+-		printf "\n$progname: %s %5.0f seconds (%2.0f minutes)\n",
++		printf "$progname: %s %5.0f seconds (%2.0f minutes)\n",
+ 			"typescript time (normal):", $times[0], $times[0]/60;
+ 		printf "$progname: %s %5.0f seconds (%2.0f minutes)\n",
+ 			"typescript time (accel) :",
